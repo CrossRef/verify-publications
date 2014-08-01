@@ -33,6 +33,11 @@
       response)
     content)))
 
+(defn parse-int
+  "Parse int with other text in it."
+  [input]
+  (. Integer parseInt (apply str (filter #{\0 \1 \2 \3 \4 \5 \6 \7 \8 \9} input))))
+
 ; API fetching.
 
 (def api-page-size 1000)
@@ -77,9 +82,9 @@
 (defn scopus-journals
   "Seq of [journal name, pissn, eissn, publisher name]"
   []
-  (let [elsevier-file (io/reader (io/file (io/resource "title_list.csv")))
+  (let [scopus-file (io/reader (io/file (io/resource "title_list.csv")))
         ; drop first line as it's the title etc.
-        journals (rest (csv/read-csv elsevier-file))]
+        journals (rest (csv/read-csv scopus-file))]
     journals))
 
 (defn scopus-info-for-publisher [publisher-name journals]
@@ -101,12 +106,13 @@
         for-interested-publishers (apply merge (map (fn [publisher-name] {publisher-name (scopus-info-for-publisher publisher-name journals)}) interested-publishers))]
     for-interested-publishers))
 
+; Custom Elsevier
+
 (def elsevier-base-url "http://www.elsevier.com/journals/title/")
 (def elsevier-journals-domain "http://www.journals.elsevier.com")
 (def elsevier-page-names ["a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "k" "l" "m" "n" "o" "p" "q" "r" "s" "t" "u" "v" "w" "x" "y" "z" "other"])
 
 (defn issn-from-publication-page [url]
-  (println "Fetch " url)
   (let [tds (map #(-> % :content first) (html/select (html/html-resource (java.net.URL. url)) [:div.ifTD]))        
         issns (map #(.substring % 6) (filter #(.contains % "ISSN: ") tds))]
     issns))
@@ -122,6 +128,32 @@
         ; issns (apply concat (map #(issn-from-publication-page (rebase-url %)) publication-urls))
         ]
     {:num-journals (count publication-urls)}))
+
+; Custom Wiley
+
+(def wiley-url "http://onlinelibrary.wiley.com/browse/publications?type=journal")
+
+(defn wiley-website-claimed-info []
+  (let [journal-count (-> (html/select (html/html-resource (java.net.URL. wiley-url)) [:div#filterLists :li]) first :content first)
+        journal-number (parse-int journal-count)]
+  {:num-journals journal-number}))
+  
+; Custom Taylor Francis
+
+(defn tnf-website-claimed-info []
+  ; Hard-coded because the TNF website prevents browsing without cookies.
+  ; From http://www.tandfonline.com/action/showPublications
+  {:num-journals 2093})
+
+; Custom Springer
+
+(def springer-url "http://link.springer.com/search?facet-content-type=%22Journal%22")
+(defn springer-website-claimed-info []
+  (let [journal-count (-> (html/select (html/html-resource (java.net.URL. springer-url)) [:h1.number-of-search-results-and-search-terms :strong]) first :content first)
+        journal-number (parse-int journal-count)]
+  {:num-journals journal-number}))
+
+
 
 (defn -main
   [& args]
@@ -141,40 +173,46 @@
         api-interested-name-counts (frequencies api-interested-publisher-names)
         
         ; From SCOPUS.
-        scopus-info (scopus-info-for-publishers)
-        
-        ; Elsevier
-        
-        ; From Elsevier website
-        elsevier-web-info (elsevier-website-claimed-info)]
+        scopus-infos (scopus-info-for-publishers)
+  
+        ; Custom
+        custom-publisher-info {"Elsevier" (elsevier-website-claimed-info) "Wiley" (wiley-website-claimed-info) "Taylor" (tnf-website-claimed-info) "Springer" (springer-website-claimed-info)}]
     
   (println "Found" (count api-journals) "journals in API")
-  (println "Results from API")
-  (doseq [[interested-name info] api-interested-name-info]
-    (println "Name:" interested-name)
-    (println "Journals" (:count info))
-    (println "All ISSNs count" (:all-issns-count info))
-    ; (println "All ISSNs" (:all-issns info))
-    (println "Journals with ISSN" (:journals-with-issn-count info))
-    (println))
+  
   (println)
   
-  (println "Results from SCOPUS list")
-  (doseq [[interested-name info] scopus-info]
-    (println "Name:" interested-name) 
-      (println "Journals" (count (:journals info)))
-      (println "ISSNs count" (count (:issns info)))
-      (println "Unique ISSNs count" (count (:unique-issns info)))
-      (println "Duplicate ISSNs count" (count (:duplicate-issns info)))
-      (println "Duplicate ISSNs" (:duplicate-issns info))
-      
-      (println "ISSNs that are in our API" (count (filter api-journals-per-issn (:issns info))))
-      (println "ISSNs that are not in our API" (count (filter #(not (api-journals-per-issn %)) (:issns info))))
-      
-      (println "ISSNs that our API thinks " interested-name " should claim but does not" (count (set/difference (:issns (get api-interested-name-info name)) (:issns info))))
-      (println "ISSNs that " interested-name " claims but our API does not" (count (set/difference (:issns info) (:issns (get api-interested-name-info name)))))
-      
-      (println))
-      
-      (println "Elsevier website")
-      (prn "Number of journals" (:num-journals elsevier-web-info))))
+  (println "Publishers:")
+  
+  (doseq [interested-name interested-publishers]
+    (println "Publisher name:" interested-name)
+    (let [api-info (api-interested-name-info interested-name)
+          scopus-info (scopus-infos interested-name)
+          custom-info (custom-publisher-info interested-name)]
+    
+    (println "Journal count:")
+    (println " -     API:" (:count api-info))
+    (println " -  SCOPUS:" (count (:journals scopus-info)))
+    (println " - Website:" (:num-journals custom-info))
+    
+    (println)
+    (println "SCOPUS")
+    (println " - ISSNs:" (count (:issns scopus-info)))
+    (println " - Unique ISSNs:" (count (:unique-issns scopus-info)))
+    (println " - Duplicate ISSNs:" (count (:duplicate-issns scopus-info)))
+    (println " - Duplicate ISSNs" (:duplicate-issns scopus-info))
+
+    (println " - ISSNs that are in our API" (count (filter api-journals-per-issn (:issns scopus-info))))
+    (println " - ISSNs that are not in our API" (count (filter #(not (api-journals-per-issn %)) (:issns scopus-info))))
+
+    (println " - ISSNs that our API thinks " interested-name " should claim but does not" (count (set/difference (:issns (get api-interested-name-info name)) (:issns scopus-info))))
+    (println " - ISSNs that " interested-name " claims but our API does not" (count (set/difference (:issns scopus-info) (:issns (get api-interested-name-info name)))))
+
+    (println)
+    (println "API:")
+    (println " - All ISSNs:" (:all-issns-count api-info))
+    ; (println "All ISSNs" (:all-issns api-info))
+    (println " - Journals with ISSN" (:journals-with-issn-count api-info))
+    
+    (println)
+    (println)))))
