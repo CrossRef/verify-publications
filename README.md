@@ -8,7 +8,7 @@ The contents of `resources/title_list.csv` is taken from `http://www.elsevier.co
 
 FIXME: explanation
 
-Create `/tmp/cache'. If you're on Windows, create equivalent directory and change value of `cache-dir` in code. 
+Create `/tmp/cache`. If you're on Windows, create equivalent directory and change value of `cache-dir` in code. 
 
 Then just `lein run`.
 
